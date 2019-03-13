@@ -1,0 +1,23 @@
+version: "3"
+
+services:
+  api:
+    container_name: go_sample_api_test
+    build:
+      context: ../
+      dockerfile: docker/development/Dockerfile
+    volumes:
+      - ../:/go/src/github.com/snowman-mh/go-sample
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+  mysql:
+    container_name: go_sample_mysql_test
+    build:
+      context: ../
+      dockerfile: docker/mysql/Dockerfile
+    tmpfs:
+      - /var/lib/mysql
+    env_file:
+      - .env

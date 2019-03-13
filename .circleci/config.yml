@@ -1,0 +1,128 @@
+version: 2
+
+jobs:
+  cache:
+    machine: true
+    steps:
+      - checkout
+      - restore_cache:
+          name: Restore Docker Image cache
+          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
+          paths: ~/caches/images.tar
+      - run:
+          name: Pull and build images if no cache exists
+          command: |
+            if [ ! -f ~/caches/images.tar ]; then
+              cp .env.default .env
+              docker-compose -f docker-compose.test.yml build
+              mkdir -p ~/caches
+              docker save $(docker image ls | awk 'NR>=2 && ! /^<none>/{print $1}') -o ~/caches/images.tar
+            fi
+          working_directory: ./docker
+      - save_cache:
+          name: Save Docker Image cache
+          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
+          paths: ~/caches/images.tar
+  test:
+    machine: true
+    steps:
+      - checkout
+      - restore_cache:
+          name: Restore Docker Image cache
+          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
+          paths: ~/caches/images.tar
+      - run:
+          name: Load Docker Image
+          command: docker load -i ~/caches/images.tar
+      - run:
+          name: Check Go Format
+          command: test -z "$(gofmt -s -l . | tee /dev/stderr)"
+      - run:
+          name: Copy environment variable file
+          command: cp docker/.env.default docker/.env
+      - run:
+          name: Start test containers
+          command: make test start
+      - run:
+          name: Wait for MySQL container to become ready
+          command: docker run --network test_default jwilder/dockerize -wait tcp://mysql:3306 -timeout 1m
+      - run:
+          name: Run test
+          command: make test run
+  migrate:
+    machine: true
+    steps:
+      - checkout
+      - run:
+          name: Build and Push Docker Image
+          command: |
+            diff=$(git diff --name-only $(git show HEAD | grep 'Merge: ' | sed -e 's/Merge: //g; s/ /\.\.\./g'))
+            if [[ "${diff}" =~ db/migrations/ ]] ; then
+              docker build -t go-sample-migration -f docker/migration/Dockerfile .
+              echo "Implement me!"
+              echo "Tag and Push Docker Image to container image registry."
+              echo "For example, tag and push to Amazon ECR."
+            fi
+      - run:
+          name: Migrate
+          command: |
+            diff=$(git diff --name-only $(git show HEAD | grep 'Merge: ' | sed -e 's/Merge: //g; s/ /\.\.\./g'))
+            if [[ "${diff}" =~ db/migrations/ ]] ; then
+              echo "Implement me!"
+              echo "Migrate relational database or something."
+              echo "For example, run ECS Task to migrate Amazon RDS if any migration files added."
+            fi
+  deploy:
+    machine: true
+    steps:
+      - checkout
+      - run:
+          name: Build and Push Docker Image
+          command: |
+            docker build -t go-sample -f docker/production/Dockerfile .
+            echo "Implement me!"
+            echo "Tag and Push Docker Image to container image registry."
+            echo "For example, tag and push to Amazon ECR."
+      - run:
+          name: Deploy
+          command: |
+            echo "Implement me!"
+            echo "Deploy application to dev/stg/prd environment."
+            echo "For example, update ECS Service for API application."
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - cache
+      - test:
+          requires:
+            - cache
+      - migrate:
+          requires:
+            - test
+          filters:
+            branches: # filter branches to execute migrate job (GitLab flow example below)
+              only:
+                - master
+                - staging
+                - production
+      - approve:
+          type: approval
+          requires:
+            - migrate
+          filters:
+            branches: # filter branches to execute approve job (GitLab flow example below)
+              only:
+                - master
+                - staging
+                - production
+      - deploy:
+          requires:
+            - approve
+          filters:
+            branches: # filter branches to execute deploy job (GitLab flow example below)
+              only:
+                - master
+                - staging
+                - production

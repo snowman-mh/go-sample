@@ -1,0 +1,39 @@
+version: "3"
+
+services:
+  api:
+    container_name: go_sample_api
+    build:
+      context: ../
+      dockerfile: docker/development/Dockerfile
+    volumes:
+      - ../:/go/src/github.com/snowman-mh/go-sample
+    ports:
+      - 8080:8080
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+  mysql:
+    container_name: go_sample_mysql
+    build:
+      context: ../
+      dockerfile: docker/mysql/Dockerfile
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+    env_file:
+      - .env
+  dbmate:
+    tty: true
+    container_name: go_sample_dbmate
+    build:
+      context: ../
+      dockerfile: docker/migration/Dockerfile
+    volumes:
+      - ../db/:/go/src/github.com/snowman-mh/go-sample/db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@${MYSQL_HOST_WRITER}:${MYSQL_PORT}/${MYSQL_DATABASE}?charset=utf8mb4&parseTime=true
+    depends_on:
+      - mysql
