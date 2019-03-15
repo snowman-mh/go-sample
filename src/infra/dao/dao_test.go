@@ -46,22 +46,9 @@ func clearDB(db *gorm.DB) {
 		if err := rows.Scan(&tableName); err != nil {
 			panic(err)
 		}
-		println("table before deleted: " + tableName)
 		if err := db.DropTable(tableName).Error; err != nil {
 			panic(err)
 		}
-	}
-
-	rows, err = db.Raw("SHOW TABLES").Rows()
-	if err != nil {
-		panic(err)
-	}
-	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
-			panic(err)
-		}
-		println("table: " + tableName)
 	}
 }
 
@@ -72,12 +59,9 @@ func migrateDB(db *gorm.DB) {
 	}
 
 	for _, file := range files {
-		println("file: " + file)
 		content := readFile(file)
 		executeSQL(db, content)
 	}
-
-	println("migrate finished")
 }
 
 func findMigrationFiles(dir string, re *regexp.Regexp) ([]string, error) {
