@@ -1,58 +1,88 @@
 version: 2
 
+defaults: &defaults
+  docker:
+    - image: circleci/golang:1.12
+  working_directory: /go/src/github.com/snowman-mh/go-sample
+
+restore_docker_cache: &restore_docker_cache
+  restore_cache:
+    name: Restore Docker Image cache
+    key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
+
+build_docker_cache: &build_docker_cache
+  run:
+    name: Pull and build images if no cache exists
+    command: |
+      if [ ! -f ~/caches/images.tar ]; then
+        cp .env.default .env
+        docker-compose -f docker-compose.test.yml build
+        mkdir -p ~/caches
+        docker save $(docker image ls | awk 'NR>=2 && ! /^<none>/{print $1}') -o ~/caches/images.tar
+      fi
+    working_directory: ./docker
+
+save_docker_cache: &save_docker_cache
+  save_cache:
+    name: Save Docker Image cache
+    key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
+    paths: ~/caches/images.tar
+
 jobs:
-  cache:
-    machine: true
+  precheck:
+    <<: *defaults
     steps:
       - checkout
-      - restore_cache:
-          name: Restore Docker Image cache
-          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
-          paths: ~/caches/images.tar
       - run:
-          name: Pull and build images if no cache exists
+          name: Check Go format
+          command: test -z $(gofmt -s -l src main.go | tee /dev/stderr)
+      - restore_cache:
+          name: Restore goimports cache
+          key: goimports
+      - run:
+          name: Check Go imports
           command: |
-            if [ ! -f ~/caches/images.tar ]; then
-              cp .env.default .env
-              docker-compose -f docker-compose.test.yml build
-              mkdir -p ~/caches
-              docker save $(docker image ls | awk 'NR>=2 && ! /^<none>/{print $1}') -o ~/caches/images.tar
+            if ! type goimports >/dev/null 2>&1; then
+              go get golang.org/x/tools/cmd/goimports
             fi
-          working_directory: ./docker
+            test -z $(goimports -l -e src main.go | tee /dev/stderr)
       - save_cache:
-          name: Save Docker Image cache
-          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
-          paths: ~/caches/images.tar
-  test:
-    machine: true
+          name: Save goimports cache
+          key: goimports
+          paths: /go/bin/goimports
+  docker_cache:
+    <<: *defaults
     steps:
       - checkout
-      - restore_cache:
-          name: Restore Docker Image cache
-          key: docker-{{ checksum "docker/development/Dockerfile" }}-{{ checksum "docker/mysql/Dockerfile" }}-{{ checksum "docker/docker-compose.test.yml" }}-{{ checksum "go.sum" }}
-          paths: ~/caches/images.tar
-      - run:
-          name: Load Docker Image
-          command: docker load -i ~/caches/images.tar
-      - run:
-          name: Check Go Format
-          command: test -z "$(gofmt -s -l . | tee /dev/stderr)"
-      - run:
-          name: Copy environment variable file
-          command: cp docker/.env.default docker/.env
-      - run:
-          name: Start test containers
-          command: make test start
-      - run:
-          name: Wait for MySQL container to become ready
-          command: docker run --network test_default jwilder/dockerize -wait tcp://mysql:3306 -timeout 1m
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - *restore_docker_cache
+      - *build_docker_cache
+      - *save_docker_cache
+  test:
+    <<: *defaults
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - *restore_docker_cache
+      - *build_docker_cache
+      - *save_docker_cache
       - run:
           name: Run test
-          command: make test run
+          command: |
+            docker load -i ~/caches/images.tar
+            cp docker/.env.default docker/.env
+            make test start
+            docker cp . $(docker ps --filter Name=go_sample_api_test -q):/go/src/github.com/snowman-mh/go-sample
+            docker run --network test_default jwilder/dockerize -wait tcp://mysql:3306 -timeout 1m
+            make test run
   migrate:
-    machine: true
+    <<: *defaults
     steps:
       - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
       - run:
           name: Build and Push Docker Image
           command: |
@@ -73,9 +103,11 @@ jobs:
               echo "For example, run ECS Task to migrate Amazon RDS if any migration files added."
             fi
   deploy:
-    machine: true
+    <<: *defaults
     steps:
       - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
       - run:
           name: Build and Push Docker Image
           command: |
@@ -94,15 +126,17 @@ workflows:
   version: 2
   build:
     jobs:
-      - cache
+      - precheck
+      - docker_cache
       - test:
           requires:
-            - cache
+            - precheck
+            - docker_cache
       - migrate:
           requires:
             - test
           filters:
-            branches: # filter branches to execute migrate job (GitLab flow example below)
+            branches: # filter branches to execute migrate/approve/deploy job (GitLab flow example below)
               only:
                 - master
                 - staging
@@ -111,18 +145,6 @@ workflows:
           type: approval
           requires:
             - migrate
-          filters:
-            branches: # filter branches to execute approve job (GitLab flow example below)
-              only:
-                - master
-                - staging
-                - production
       - deploy:
           requires:
             - approve
-          filters:
-            branches: # filter branches to execute deploy job (GitLab flow example below)
-              only:
-                - master
-                - staging
-                - production
